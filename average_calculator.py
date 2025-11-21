@@ -5,17 +5,18 @@ from typing import Optional,Any
 
 ## Time-weighted average calculator for Home Assistant pyscript.
 
-DEBUG = True
+DEBUG = False
 
 MAIN_SENSORS = [
     # SENSORS: (source, avg_target_suffix, energy_target_suffix[, mode, threshold])
     ("sensor.power_consumers", "_avg_min", None, "step"),
     ("sensor.envoy_122202147358_current_power_production", "_avg_min", None, "step"),
-    ("sensor.p1_meter_power", "_avg_min", None, "step"),
+    ("sensor.p1_meter_vermogen", "_avg_min", None, "step"),
+    ("sensor.ct_meters_zonnepanelen_power_ab", "_avg_min", None, "step"),
 ]
 
 DEFAULT_MODE = "step"   # options: "step", "linear", "linear_extrapolate"
-DEFAULT_THRESHOLD = 0         # W minimum before treated as 0
+DEFAULT_THRESHOLD = None         # W minimum before treated as 0
 
 BUFFER_MARGIN = timedelta(seconds=5)
 MAX_POINTS = 300          # safety cap on points stored per sensor
@@ -53,6 +54,7 @@ def set_data(main_sensor,sensor):
     threshold = group_info[main_sensor]["threshold"]
     friendly_name=state.get(sensor+".friendly_name")
     unit_of_measurement=state.get(sensor+".unit_of_measurement")
+    device_class=state.get(sensor+".device_class")
 
     data[sensor] = {
         "values": deque(maxlen=MAX_POINTS),  # stores (datetime, float)
@@ -61,6 +63,7 @@ def set_data(main_sensor,sensor):
         "threshold": threshold,
         "friendly_name": friendly_name,
         "unit_of_measurement": unit_of_measurement,
+        "device_class": device_class,
         "avg_suffix": group_info[main_sensor]["avg_suffix"],
         "energy_suffix": group_info[main_sensor]["energy_suffix"],
     }
@@ -96,6 +99,8 @@ def apply_threshold(src: str, v: Optional[float]) -> Optional[float]:
     if v is None:
         return None
     t = data[src]["threshold"]
+    if t is None:
+        return float(v)
     return 0.0 if v < t else float(v)
 
 
@@ -233,10 +238,12 @@ def publish_result(target_avg: Optional[str], target_energy: Optional[str], avg_
     num_values = len(data["values"])
     friendly_name = data["friendly_name"]
     unit_of_measurement = data["unit_of_measurement"]
+    device_class = data["device_class"]
 
     if target_avg and avg_value is not None:
         state.set(target_avg, avg_value, {
             "unit_of_measurement": unit_of_measurement,
+            "device_class": device_class,
             "samples": num_values,
             "friendly_name": (friendly_name+' avg min').title()
         })
@@ -273,6 +280,7 @@ for g in MAIN_SENSORS:
 
     log.info(f"Setting up test group: {g}")
     log.info(f"  Group: {main_sensor}")
+
     attrs = state.getattr(main_sensor)
     if ('entity_id' not in attrs) or (not attrs['entity_id']):
         log.warning(f"   {main_sensor} is not a group !")
