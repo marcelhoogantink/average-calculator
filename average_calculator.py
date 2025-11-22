@@ -6,9 +6,8 @@ import bisect
 log.info("Loading Average Calculator pyscript....")
 
 ## Time-weighted average calculator for Home Assistant pyscript.
-'''
-    Start with this automation:
-    ###########################
+def dummy():
+    """Start with this automation.
 
     alias: Start Pyscript Average Calculator
     description: Starting Pyscript Average Calculator on HA start or pyscript reload.
@@ -23,16 +22,18 @@ log.info("Loading Average Calculator pyscript....")
         metadata: {}
         data: {}
     mode: single
-    ############################
-'''
+
+    """
+
 DEBUG = False
 
 MAIN_SENSORS = [
     # SENSORS: (source, avg_target_suffix, energy_target_suffix[, mode, threshold])
     ("sensor.power_consumers", "_avg_min", None, "step"),
     ("sensor.envoy_122202147358_current_power_production", "_avg_min", None, "step"),
-    ("sensor.p1_meter_vermogen", "_avg_min", None, "step"),
-    ("sensor.ct_meters_zonnepanelen_power_ab", "_avg_min", None, "step"),
+    ("sensor.p1_meter_power", "_avg_min", None, "step"),
+#    ("sensor.p1_meter_vermogen", "_avg_min", None, "step"),
+#    ("sensor.ct_meters_zonnepanelen_power_ab", "_avg_min", None, "step"),
 ]
 
 DEFAULT_MODE = "step"   # options: "step", "linear", "linear_extrapolate"
@@ -52,9 +53,16 @@ group_entity_list = {}
 group_info = {}
 
 
-#
-# Your actual processing logic goes here
-#
+def is_valid(entity):
+
+    try:
+        val = state.get(entity) or None
+
+    except (NameError):
+        return False
+
+
+    return val not in (None, "unknown", "unavailable")
 
 
 #
@@ -64,27 +72,29 @@ group_info = {}
 async def start_average_calculator():
 
     log.info("Waiting Average Calculator...")
-    def is_valid(entity):
-        val = state.get(entity)
-        return val not in (None, "unknown", "unavailable")
 
     # Loop until ALL sensors report a valid state
-    while True:
+    count=0
+    while ( count < 10):
+        count+=1
         missing = [s for s in SENSOR_IDS if not is_valid(s)]
 
         if not missing:
             log.info("All MAIN_SENSORS are available — starting main processing.")
             break
 
-        log.info(f"Waiting for sensors to become available: {missing}")
+        log.info(f"Waiting for sensors to become available: {missing}/ {count}  ")
         await task.sleep(1)
 
+    if (missing):
+        log.warning(f"Some sensors are still missing after wait: {missing}.")
+        log.error(f"Average Calculator setup Stopped. (missing sensors: {missing})")
+    else:
     #
     # Now that sensors are ready, run your function
     #
-    log.info("Running Average Calculator...")
-    main_average_calculator()
-
+        log.info("Running Average Calculator...")
+        main_average_calculator()
 
 # MAIN CODE below !!
 
@@ -105,6 +115,14 @@ def add_value(src: str, t: datetime, v: float) -> None:
         # Insert while maintaining order
         bisect.insort(values, (t, v))
 
+def state_get(sensor):
+    try:
+        var = state.get(sensor)
+    except (NameError,AttributeError):
+        return None
+
+    return var
+
 def set_data(main_sensor,sensor):
     state_value=state.get(sensor)
     if state_value in ("unknown", "unavailable", "none"):
@@ -117,7 +135,7 @@ def set_data(main_sensor,sensor):
     threshold = group_info[main_sensor]["threshold"]
     friendly_name=state.get(sensor+".friendly_name")
     unit_of_measurement=state.get(sensor+".unit_of_measurement")
-    device_class=state.get(sensor+".device_class")
+    device_class=state_get(sensor+".device_class")
 
     data[sensor] = {
         "values": deque(maxlen=MAX_POINTS),  # stores (datetime, float)
@@ -446,6 +464,6 @@ def state_restored_factory(group_restored_list):
 
         log.info(f"========>>> Updated sources list: {sources}")
 
+event.fire("average_calculator_reloaded")
 
 # End of module
-event.fire("average_calculator_reloaded")
