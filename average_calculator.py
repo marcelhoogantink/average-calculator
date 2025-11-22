@@ -1,10 +1,30 @@
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Optional,Any
+import bisect
 
+log.info("Loading Average Calculator pyscript....")
 
 ## Time-weighted average calculator for Home Assistant pyscript.
+'''
+    Start with this automation:
+    ###########################
 
+    alias: Start Pyscript Average Calculator
+    description: Starting Pyscript Average Calculator on HA start or pyscript reload.
+    triggers:
+    - trigger: homeassistant
+        event: start
+    - trigger: event
+        event_type: average_calculator_reloaded
+    conditions: []
+    actions:
+    - action: pyscript.start_average_calculator
+        metadata: {}
+        data: {}
+    mode: single
+    ############################
+'''
 DEBUG = False
 
 MAIN_SENSORS = [
@@ -21,6 +41,51 @@ DEFAULT_THRESHOLD = None         # W minimum before treated as 0
 BUFFER_MARGIN = timedelta(seconds=5)
 MAX_POINTS = 300          # safety cap on points stored per sensor
 
+SENSOR_IDS = [s[0] for s in MAIN_SENSORS]
+
+triggers = {}
+data = {}
+sources = []
+groups = []
+group_restored_list = []
+group_entity_list = {}
+group_info = {}
+
+
+#
+# Your actual processing logic goes here
+#
+
+
+#
+# Wait until all sensors are available, THEN run your logic
+#
+@service
+async def start_average_calculator():
+
+    log.info("Waiting Average Calculator...")
+    def is_valid(entity):
+        val = state.get(entity)
+        return val not in (None, "unknown", "unavailable")
+
+    # Loop until ALL sensors report a valid state
+    while True:
+        missing = [s for s in SENSOR_IDS if not is_valid(s)]
+
+        if not missing:
+            log.info("All MAIN_SENSORS are available — starting main processing.")
+            break
+
+        log.info(f"Waiting for sensors to become available: {missing}")
+        await task.sleep(1)
+
+    #
+    # Now that sensors are ready, run your function
+    #
+    log.info("Running Average Calculator...")
+    main_average_calculator()
+
+
 # MAIN CODE below !!
 
 ###################
@@ -33,14 +98,12 @@ def _log(msg: str):
 def add_value(src: str, t: datetime, v: float) -> None:
     values = data[src]["values"]
 
-    if not values or  not len(values) or t >= values[-1][0]:
+    # Fast path: append if list is empty or t >= last timestamp
+    if not values or t >= values[-1][0]:
         values.append((t, v))
     else:
-        arr = list(values)
-        import bisect
-        bisect.insort(arr, (t, v))
-        values.clear()
-        values.extend(arr)
+        # Insert while maintaining order
+        bisect.insort(values, (t, v))
 
 def set_data(main_sensor,sensor):
     state_value=state.get(sensor)
@@ -261,53 +324,54 @@ def publish_result(target_avg: Optional[str], target_energy: Optional[str], avg_
 # MAIN CODE INITIALIZATION
 #########################
 
-triggers = {}
-data = {}
-sources = []
-groups = []
-group_restored_list = []
-group_entity_list = {}
-group_info = {}
+def main_average_calculator():
+    log.info("Running main processing function...")
+    # ---- your main logic here ----
 
-for g in MAIN_SENSORS:
-    main_sensor = g[0]
-    group_info[main_sensor] = {
-        "avg_suffix": g[1],
-        "energy_suffix": g[2],
-        "mode": g[3] if len(g) > 3 else DEFAULT_MODE,
-        "threshold": g[4] if len(g) > 4 else DEFAULT_THRESHOLD
-    }
+    for g in MAIN_SENSORS:
+        main_sensor = g[0]
+        group_info[main_sensor] = {
+            "avg_suffix": g[1],
+            "energy_suffix": g[2],
+            "mode": g[3] if len(g) > 3 else DEFAULT_MODE,
+            "threshold": g[4] if len(g) > 4 else DEFAULT_THRESHOLD
+        }
 
-    log.info(f"Setting up test group: {g}")
-    log.info(f"  Group: {main_sensor}")
-
-    attrs = state.getattr(main_sensor)
-    if ('entity_id' not in attrs) or (not attrs['entity_id']):
-        log.warning(f"   {main_sensor} is not a group !")
-        sensoren = [main_sensor]
-    else:
-        log.info(f"  {main_sensor} is GROUP with members: {attrs['entity_id']}")
-        log.info(f"  Member count: {sensor.power_consumers.entity_id}")
-
-        sensoren = attrs['entity_id']
-        length = len(attrs['entity_id']) if ('entity_id' in attrs) and attrs['entity_id'] else 0
-        groups.append(main_sensor)
-        group_restored_list.append(main_sensor+'.restored')
-        group_entity_list[main_sensor] = attrs['entity_id']
+        log.info(f"Setting up test group: {g}")
+        log.info(f"  Group: {main_sensor}")
 
 
-    for sensor in sensoren:
-        set_data(main_sensor,sensor)
-        sources.append(sensor)
+        attrs = state.getattr(main_sensor)
+        log.warning(f"  Attributes: {attrs}")
+        if ('entity_id' not in attrs) or (not attrs['entity_id']):
+            log.warning(f"   {main_sensor} is not a group !")
+            sensoren = [main_sensor]
+        else:
+            log.info(f"  {main_sensor} is GROUP with members: {attrs['entity_id']}")
+            log.info(f"  Member count: {sensor.power_consumers.entity_id}")
 
-    log.info(f"  Members: {groups}")
-    log.info(f"  Member attributes: {group_restored_list}")
-    log.info(f"  Sources: {sources}")
+            sensoren = attrs['entity_id']
+            length = len(attrs['entity_id']) if ('entity_id' in attrs) and attrs['entity_id'] else 0
+            groups.append(main_sensor)
+            # for check whether a group member changed
+            group_restored_list.append(main_sensor+'.restored')
+            group_entity_list[main_sensor] = attrs['entity_id']
 
-    for source in sources:
-        state_trigger_factory(source)
 
-    log.info(f"Data initialized for group {triggers}")
+        for sensor in sensoren:
+            set_data(main_sensor,sensor)
+            sources.append(sensor)
+
+        log.info(f"  Members: {groups}")
+        log.info(f"  Member attributes: {group_restored_list}")
+        log.info(f"  Sources: {sources}")
+
+        for source in sources:
+            state_trigger_factory(source)
+
+        state_restored_factory(group_restored_list)
+
+        log.info(f"Data initialized for group {triggers}")
 
 #########################
 # === TRIGGERS ===
@@ -339,47 +403,49 @@ def periodic_update(trigger_type=None):
     now1 = datetime.now()
     log.info(f"Periodic update ready at {now1-now}")
 
+def state_restored_factory(group_restored_list):
+    log.info(f"Creating group restored triggers for groups: {group_restored_list}")
+    @state_trigger(group_restored_list)
+    def group_members_changed(old_value=None, value=None,var_name=None):
 
-@state_trigger(group_restored_list)
-def group_members_changed(old_value=None, value=None,var_name=None):
+        log.warning(f"Group members changed for {groups}: old_value={old_value}, new_value={value} var_name: {var_name}")
+        log.info(f"Re-initializing group members and attributes. {group_restored_list}")
 
-    log.warning(f"Group members changed for {groups}: old_value={old_value}, new_value={value} var_name: {var_name}")
-    log.info(f"Re-initializing group members and attributes. {group_restored_list}")
+        attributes = state.getattr(var_name)
+        entity_list = attributes['entity_id']
+        log.info(f" Current entity_list: {entity_list}")
 
-    attributes = state.getattr(var_name)
-    entity_list = attributes['entity_id']
-    log.info(f" Current entity_list: {entity_list}")
+        set_old = set(group_entity_list[var_name])
+        set_new = set(entity_list)
 
-    set_old = set(group_entity_list[var_name])
-    set_new = set(entity_list)
+        added = set_new - set_old
+        log.info(f"Added: {added}")
 
-    added = set_new - set_old
-    log.info(f"Added: {added}")
+        removed= set_old - set_new
+        log.info(f"Removes: {removed}")
 
-    removed= set_old - set_new
-    log.info(f"Removes: {removed}")
+        log.info(f"========>>> Old sources list: {sources}")
+        if (removed):
+            for s in removed:
+                sources.remove(s)
+                del data[s]
+                del triggers[s]
 
-    log.info(f"========>>> Old sources list: {sources}")
-    if (removed):
-        for s in removed:
-            sources.remove(s)
-            del data[s]
-            del triggers[s]
+            log.info(f" Removing sensors from sources list: {removed}")
 
-        log.info(f" Removing sensors from sources list: {removed}")
+        if (added):
+            for s in added:
+                sources.append(s)
+                set_data(var_name,s)
+                state_trigger_factory(s)
 
-    if (added):
-        for s in added:
-            sources.append(s)
-            set_data(var_name,s)
-            state_trigger_factory(s)
+            log.info(f" Adding sensors to sources list: {added}")
 
-        log.info(f" Adding sensors to sources list: {added}")
-
-    group_entity_list[var_name] = entity_list
+        group_entity_list[var_name] = entity_list
 
 
-    log.info(f"========>>> Updated sources list: {sources}")
+        log.info(f"========>>> Updated sources list: {sources}")
 
 
 # End of module
+event.fire("average_calculator_reloaded")
