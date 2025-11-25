@@ -10,24 +10,6 @@ log.info("#######")
 log.info("Loading Average Calculator pyscript....")
 
 ## Time-weighted average calculator for Home Assistant pyscript.
-def dummy():
-    """Start with this automation.
-
-    alias: Start Pyscript Average Calculator
-    description: Starting Pyscript Average Calculator on HA start or pyscript reload.
-    triggers:
-    - trigger: homeassistant
-        event: start
-    - trigger: event
-        event_type: average_calculator_reloaded
-    conditions: []
-    actions:
-    - action: pyscript.init_average_calculator
-        metadata: {}
-        data: {}
-    mode: single
-
-    """
 
 DEBUG = False
 
