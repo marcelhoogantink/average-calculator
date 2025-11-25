@@ -18,7 +18,7 @@ def dummy():
         event_type: average_calculator_reloaded
     conditions: []
     actions:
-    - action: pyscript.start_average_calculator
+    - action: pyscript.init_average_calculator
         metadata: {}
         data: {}
     mode: single
@@ -29,26 +29,28 @@ DEBUG = False
 
 MAIN_SENSORS = [
     # SENSORS: (source, avg_target_suffix, energy_target_suffix[, mode, threshold])
+#    ("sensor.zigbee_power_switch_6_power", "_avg_min", None, "step"),
     ("sensor.power_consumers", "_avg_min", None, "step"),
-    ("sensor.envoy_122202147358_current_power_production", "_avg_min", None, "step"),
-    ("sensor.p1_meter_power", "_avg_min", None, "step"),
-#    ("sensor.p1_meter_vermogen", "_avg_min", None, "step"),
-#    ("sensor.ct_meters_zonnepanelen_power_ab", "_avg_min", None, "step"),
+#    ("sensor.envoy_122202147358_current_power_production", "_avg_min", None, "step"),
+#    ("sensor.p1_meter_power", "_avg_min", None, "step"),
+    ("sensor.p1_meter_vermogen", "_avg_min", None, "step"),
+    ("sensor.ct_meters_zonnepanelen_power_ab", "_avg_min", None, "step"),
 ]
 
 DEFAULT_MODE = "step"   # options: "step", "linear", "linear_extrapolate"
 DEFAULT_THRESHOLD = None         # W minimum before treated as 0
 
 BUFFER_MARGIN = timedelta(seconds=5)
-MAX_POINTS = 300          # safety cap on points stored per sensor
+MAX_POINTS = 100          # safety cap on points stored per sensor
 
 SENSOR_IDS = [s[0] for s in MAIN_SENSORS]
 
 triggers = {}
+changed_triggers = {}
 data = {}
 sources = []
 groups = []
-group_restored_list = []
+group_changed_list = []
 group_entity_list = {}
 group_info = {}
 
@@ -69,13 +71,15 @@ def is_valid(entity):
 # Wait until all sensors are available, THEN run your logic
 #
 @service
-async def start_average_calculator():
+async def init_average_calculator():
 
     log.info("Waiting Average Calculator...")
+    #log.info(f"triggers: {triggers} ")
 
     # Loop until ALL sensors report a valid state
     count=0
-    while ( count < 10):
+    missing = []
+    while ( count < 30):
         count+=1
         missing = [s for s in SENSOR_IDS if not is_valid(s)]
 
@@ -93,8 +97,8 @@ async def start_average_calculator():
     #
     # Now that sensors are ready, run your function
     #
-        log.info("Running Average Calculator...")
-        main_average_calculator()
+        log.info("Starting Average Calculator...")
+        start_average_calculator()
 
 # MAIN CODE below !!
 
@@ -137,6 +141,7 @@ def set_data(main_sensor,sensor):
     unit_of_measurement=state.get(sensor+".unit_of_measurement")
     device_class=state_get(sensor+".device_class")
 
+    #log.info(f"Setting up {sensor}")
     data[sensor] = {
         "values": deque(maxlen=MAX_POINTS),  # stores (datetime, float)
         "last_value": None,                   # (datetime, float)
@@ -152,29 +157,6 @@ def set_data(main_sensor,sensor):
     _log(f"Initializing {sensor} with last known value: {state_value} at {time}, {friendly_name}, {unit_of_measurement}")
     add_value(sensor, time, float(state_value))
 
-def state_trigger_factory(source):
-
-    log.info(f"Creating state triggers for sources: {source}")
-    @state_trigger(source)
-    def state_trigger_var(value=None, old_value=None, trigger_type=None, var_name=None):
-        triggered_at = datetime.now()
-        src = var_name
-
-        if value is None:
-            return
-
-        try:
-            v = float(value)
-        except (TypeError, ValueError):
-            return
-
-        v = apply_threshold(src, v)
-        data[src]["last_value"] = (triggered_at, v)
-        add_value(src, triggered_at, v)
-        cleanup(src, triggered_at)
-        _log(f"Stored {src} @ {triggered_at}: {v}")
-
-    triggers[source] =state_trigger_var
 
 def apply_threshold(src: str, v: Optional[float]) -> Optional[float]:
     if v is None:
@@ -338,58 +320,6 @@ def publish_result(target_avg: Optional[str], target_energy: Optional[str], avg_
 
 
 
-#########################
-# MAIN CODE INITIALIZATION
-#########################
-
-def main_average_calculator():
-    log.info("Running main processing function...")
-    # ---- your main logic here ----
-
-    for g in MAIN_SENSORS:
-        main_sensor = g[0]
-        group_info[main_sensor] = {
-            "avg_suffix": g[1],
-            "energy_suffix": g[2],
-            "mode": g[3] if len(g) > 3 else DEFAULT_MODE,
-            "threshold": g[4] if len(g) > 4 else DEFAULT_THRESHOLD
-        }
-
-        log.info(f"Setting up test group: {g}")
-        log.info(f"  Group: {main_sensor}")
-
-
-        attrs = state.getattr(main_sensor)
-        log.warning(f"  Attributes: {attrs}")
-        if ('entity_id' not in attrs) or (not attrs['entity_id']):
-            log.warning(f"   {main_sensor} is not a group !")
-            sensoren = [main_sensor]
-        else:
-            log.info(f"  {main_sensor} is GROUP with members: {attrs['entity_id']}")
-            log.info(f"  Member count: {sensor.power_consumers.entity_id}")
-
-            sensoren = attrs['entity_id']
-            length = len(attrs['entity_id']) if ('entity_id' in attrs) and attrs['entity_id'] else 0
-            groups.append(main_sensor)
-            # for check whether a group member changed
-            group_restored_list.append(main_sensor+'.restored')
-            group_entity_list[main_sensor] = attrs['entity_id']
-
-
-        for sensor in sensoren:
-            set_data(main_sensor,sensor)
-            sources.append(sensor)
-
-        log.info(f"  Members: {groups}")
-        log.info(f"  Member attributes: {group_restored_list}")
-        log.info(f"  Sources: {sources}")
-
-        for source in sources:
-            state_trigger_factory(source)
-
-        state_restored_factory(group_restored_list)
-
-        log.info(f"Data initialized for group {triggers}")
 
 #########################
 # === TRIGGERS ===
@@ -398,9 +328,11 @@ def main_average_calculator():
 def periodic_update(trigger_type=None):
     now = datetime.now()
     log.info(f"Periodic update triggered at {now}")
+    #log.info(f"Triggers= {triggers}")
     start = now - timedelta(minutes=1)
 
     for src in sources:
+
         data_src = data[src]
         target_avg_suffix= data_src["avg_suffix"]
         target_energy_suffix = data_src["energy_suffix"]
@@ -411,36 +343,65 @@ def periodic_update(trigger_type=None):
 
         # Direct call, no async/await needed
         avg, energy = calc_time_weighted_avg_energy(src, start, now)
-        data_src = data[src]
 
         publish_result(target_avg, target_energy, avg, energy, data_src)
-        log.info(f"  Published results - Avg: {'{0:8.2f}'.format(avg)}, Energy: {'{0:8.2f}'.format(energy)}  for {src}")
+        #log.info(f"  Published results - Avg: {'{0:8.2f}'.format(avg)}, Energy: {'{0:8.2f}'.format(energy)}  for {src}")
         #now1 = datetime.now()
         #log.info(f"Periodic update triggered at {now1-now}")
 
     now1 = datetime.now()
-    log.info(f"Periodic update ready at {now1-now}")
+    #log.info(f"Periodic update ready at {now1-now}")
 
-def state_restored_factory(group_restored_list):
-    log.info(f"Creating group restored triggers for groups: {group_restored_list}")
-    @state_trigger(group_restored_list)
+# Factory to create state triggers for each source sensor
+def state_trigger_factory(source):
+    #log.info(f"Creating state trigger for source: {source}")
+    @state_trigger(source)
+    def state_trigger_var(value=None, old_value=None, trigger_type=None, var_name=None):
+        #log.info(f"State trigger fired for {var_name}: old_value={old_value}, new_value={value}, trigger_type={trigger_type}")
+        triggered_at = datetime.now()
+        src = var_name
+
+
+        if value is None:
+            log.warning(f"State trigger for {src} received None value, ignoring.")
+            return
+
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            log.warning(f"State trigger for {src} received non-numeric value '{value}', ignoring.")
+            return
+
+        v = apply_threshold(src, v)
+        data[src]["last_value"] = (triggered_at, v)
+        #log.info(f"State trigger for {src} at {triggered_at}: {v}")
+        add_value(src, triggered_at, v)
+        cleanup(src, triggered_at)
+        _log(f"Stored {src} @ {triggered_at}: {v}")
+
+    triggers[source] =state_trigger_var
+    #log.info(f"Created state trigger for source: {source}, triggers: {triggers}")
+
+def group_changed_factory(group_changed):
+    #log.info(f"Creating group-changed-trigger for group-attribute: {group_changed}")
+    @state_trigger(group_changed)
     def group_members_changed(old_value=None, value=None,var_name=None):
 
-        log.warning(f"Group members changed for {groups}: old_value={old_value}, new_value={value} var_name: {var_name}")
-        log.info(f"Re-initializing group members and attributes. {group_restored_list}")
+        #log.warning(f"Group members changed for {groups}: old_value={old_value}, new_value={value} var_name: {var_name}")
+        #log.info(f"Re-initializing group members and attributes. {group_changed}")
 
         attributes = state.getattr(var_name)
         entity_list = attributes['entity_id']
-        log.info(f" Current entity_list: {entity_list}")
+        #log.info(f" Current entity_list: {entity_list}")
 
         set_old = set(group_entity_list[var_name])
         set_new = set(entity_list)
 
         added = set_new - set_old
-        log.info(f"Added: {added}")
+        #log.info(f"Added: {added}")
 
         removed= set_old - set_new
-        log.info(f"Removes: {removed}")
+        #log.info(f"Removes: {removed}")
 
         log.info(f"========>>> Old sources list: {sources}")
         if (removed):
@@ -460,9 +421,67 @@ def state_restored_factory(group_restored_list):
             log.info(f" Adding sensors to sources list: {added}")
 
         group_entity_list[var_name] = entity_list
-
-
         log.info(f"========>>> Updated sources list: {sources}")
+
+    changed_triggers[group_changed] =group_members_changed
+
+#########################
+# MAIN CODE INITIALIZATION
+#########################
+
+def start_average_calculator():
+    log.info("Starting main processing function...")
+    # ---- your main logic here ----
+
+    for g in MAIN_SENSORS:
+        main_sensor = g[0]
+        group_info[main_sensor] = {
+            "avg_suffix": g[1],
+            "energy_suffix": g[2],
+            "mode": g[3] if len(g) > 3 else DEFAULT_MODE,
+            "threshold": g[4] if len(g) > 4 else DEFAULT_THRESHOLD
+        }
+
+        #log.info(f"Setting up test group: {g}")
+        #log.info(f"  Group: {main_sensor}")
+
+
+        attrs = state.getattr(main_sensor)
+        #log.warning(f"  Attributes: {attrs}")
+        if ('entity_id' not in attrs) or (not attrs['entity_id']):
+            # NOT A GROUP
+            #log.warning(f"   {main_sensor} is not a group !")
+            sensoren = [main_sensor]
+        else:
+            # GROUP
+            #log.info(f"  {main_sensor} is GROUP with members: {attrs['entity_id']}")
+            #log.info(f"  Member count: {sensor.power_consumers.entity_id}")
+
+            sensoren = attrs['entity_id']
+            length = len(attrs['entity_id']) if ('entity_id' in attrs) and attrs['entity_id'] else 0
+            groups.append(main_sensor)
+            # for check change of group members by watching restored attribute
+            group_changed_list.append(main_sensor+'.restored')
+            group_entity_list[main_sensor] = attrs['entity_id']
+
+        # Initialize data for each sensor
+        for sensor in sensoren:
+            set_data(main_sensor,sensor)
+            sources.append(sensor)
+
+        #log.info(f"  Members: {groups}")
+        #log.info(f"  Member attributes: {group_changed_list}")
+        #log.info(f"  Sources: {sources}")
+
+    log.info(f"Creating {len(sources)} state triggers for sources...")
+    for source in sources:
+        state_trigger_factory(source)
+
+    log.info(f"Creating {len(group_changed_list)} group-changed triggers...")
+    for group_changed in group_changed_list:
+        group_changed_factory(group_changed)
+
+    #log.info(f"Data initialized for group {triggers}")
 
 event.fire("average_calculator_reloaded")
 
