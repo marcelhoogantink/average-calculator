@@ -3,6 +3,10 @@ from datetime import datetime, timedelta
 from typing import Optional,Any
 import bisect
 
+log.info("####")
+log.info("#####")
+log.info("######")
+log.info("#######")
 log.info("Loading Average Calculator pyscript....")
 
 ## Time-weighted average calculator for Home Assistant pyscript.
@@ -100,6 +104,7 @@ async def init_average_calculator():
         log.info("Starting Average Calculator...")
         start_average_calculator()
 
+    return f"Average Calculator initialized after waiting {count} seconds."
 # MAIN CODE below !!
 
 ###################
@@ -324,6 +329,13 @@ def publish_result(target_avg: Optional[str], target_energy: Optional[str], avg_
 #########################
 # === TRIGGERS ===
 #########################
+
+@time_trigger("startup")
+def startup_trigger(trigger_type=None):
+    log.info(f"Average Calculator pyscript reloaded trigger fired trigger: {trigger_type}.")
+    test = init_average_calculator()
+    log.info(f"Average Calculator pyscript reload processing done: {test}.")
+
 @time_trigger("period(0, 1min)")
 def periodic_update(trigger_type=None):
     now = datetime.now()
@@ -483,6 +495,6 @@ def start_average_calculator():
 
     #log.info(f"Data initialized for group {triggers}")
 
-event.fire("average_calculator_reloaded")
+log.info("Average Calculator pyscript loaded.")
 
 # End of module
