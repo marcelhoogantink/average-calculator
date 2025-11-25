@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Optional,Any
 import bisect
 
-log.info("####")
+log.info("#######################################")
 log.info("#####")
 log.info("######")
 log.info("#######")
@@ -12,6 +12,8 @@ log.info("Loading Average Calculator pyscript....")
 ## Time-weighted average calculator for Home Assistant pyscript.
 
 DEBUG = False
+
+INTERVAL = 60  # seconds between average calculations
 
 MAIN_SENSORS = [
     # SENSORS: (source, avg_target_suffix, energy_target_suffix[, mode, threshold])
@@ -66,13 +68,13 @@ async def init_average_calculator():
     count=0
     missing = []
     while ( count < 30):
-        count+=1
         missing = [s for s in SENSOR_IDS if not is_valid(s)]
 
         if not missing:
             log.info("All MAIN_SENSORS are available — starting main processing.")
             break
 
+        count+=1
         log.info(f"Waiting for sensors to become available: {missing}/ {count}  ")
         await task.sleep(1)
 
@@ -157,7 +159,7 @@ def apply_threshold(src: str, v: Optional[float]) -> Optional[float]:
 
 def cleanup(src: str, now: datetime) -> None:
     values = data[src]["values"]
-    cutoff = now - timedelta(minutes=1) - BUFFER_MARGIN
+    cutoff = now - timedelta(seconds=INTERVAL) - BUFFER_MARGIN
 
     #_log(f"Cleaning up values for {src} before {cutoff}")
     #_log(f"====>> values before cleanup for {src}: {list(values)}")
@@ -318,12 +320,12 @@ def startup_trigger(trigger_type=None):
     test = init_average_calculator()
     log.info(f"Average Calculator pyscript reload processing done: {test}.")
 
-@time_trigger("period(0, 1min)")
+@time_trigger(f"period(0,{INTERVAL}sec)")
 def periodic_update(trigger_type=None):
     now = datetime.now()
     log.info(f"Periodic update triggered at {now}")
     #log.info(f"Triggers= {triggers}")
-    start = now - timedelta(minutes=1)
+    start = now - timedelta(seconds=INTERVAL)
 
     for src in sources:
 
